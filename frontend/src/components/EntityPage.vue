@@ -15,7 +15,6 @@ const showCreate = ref(false);
 const pending = ref<{ item: DomainRecord; status: string } | null>(null);
 const roleRank: Record<string, number> = { viewer: 1, operator: 2, reviewer: 3, admin: 4 };
 const canWrite = computed(() => (roleRank[session.value?.role || ''] || 0) >= roleRank.operator);
-const canReview = computed(() => (roleRank[session.value?.role || ''] || 0) >= roleRank.reviewer);
 const highRisk = computed(() => props.store.items.filter((item: DomainRecord) => ['high', 'critical'].includes(item.riskLevel)).length);
 
 onMounted(() => void props.store.load(props.config.path));
@@ -23,8 +22,11 @@ onMounted(() => void props.store.load(props.config.path));
 function canTransition(item: DomainRecord): boolean {
   const target = nextStatus(item.status, props.config.statuses);
   if (!target || !canWrite.value) return false;
-  if (props.config.path === 'approvals' && item.status === 'approved') return false;
-  if (props.config.path === 'approvals' && ['approved', 'rejected'].includes(target)) return canReview.value;
+  if (props.config.path === 'approvals') {
+    // The approval workbench owns the full state machine including 待补正; the
+    // generic linear "next status" action only covers the initial submission.
+    return item.status === 'draft';
+  }
   return true;
 }
 

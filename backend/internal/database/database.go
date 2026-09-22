@@ -216,7 +216,7 @@ func seedStageApproval(ctx context.Context, db *gorm.DB) error {
 			Category: "常规", RiskLevel: "low", MetricValue: 12.5, MetricUnit: "unit",
 			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-512-01"},
 
-		{BaseModel: model.BaseModel{Code: "SA-002", Name: "阶段审批示例二", Status: "review", Version: 1,
+		{BaseModel: model.BaseModel{Code: "SA-002", Name: "阶段审批示例二", Status: "review", Version: 2,
 			Description: "用于启动验证和主要流程演示的阶段审批记录"}, Facility: "文物保护处理审批区域2", Owner: "质量复核组",
 			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
 			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-512-02"},
@@ -225,6 +225,23 @@ func seedStageApproval(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的阶段审批记录"}, Facility: "文物保护处理审批区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-512-03"},
+
+		// 待补正：复核人已退回并填写意见，等待操作员提交补正说明。
+		{BaseModel: model.BaseModel{Code: "SA-004", Name: "阶段审批示例四", Status: "correction", Version: 3,
+			Description: "演示退回补正流程的阶段审批记录"}, Facility: "文物保护处理审批区域4", Owner: "现场操作员",
+			Category: "补正", RiskLevel: "high", MetricValue: 42.0, MetricUnit: "score",
+			EffectiveAt: now.Add(9 * time.Hour), Evidence: "检测影像页码待补充", RelatedCode: "REL-512-04"},
 	}
-	return db.WithContext(ctx).Create(&items).Error
+	if err := db.WithContext(ctx).Create(&items).Error; err != nil {
+		return err
+	}
+	opinions := []model.ApprovalOpinion{
+		{StageApprovalID: items[1].ID, Version: 2, Batch: 1, Status: "review", Kind: model.OpinionKindSubmit,
+			Opinion: "材料检测齐备，提交阶段复核", Actor: "operator", Role: model.RoleOperator, RequestID: "seed-sa002", CreatedAt: now},
+		{StageApprovalID: items[3].ID, Version: 2, Batch: 1, Status: "review", Kind: model.OpinionKindSubmit,
+			Opinion: "首次提交阶段复核", Actor: "operator", Role: model.RoleOperator, RequestID: "seed-sa004-submit", CreatedAt: now.Add(-2 * time.Hour)},
+		{StageApprovalID: items[3].ID, Version: 3, Batch: 1, Status: "correction", Kind: model.OpinionKindDecision,
+			Opinion: "检测报告缺少取样页码与影像编号，请补正后重新提交", Actor: "reviewer", Role: model.RoleReviewer, RequestID: "seed-sa004-correction", CreatedAt: now.Add(-1 * time.Hour)},
+	}
+	return db.WithContext(ctx).Create(&opinions).Error
 }

@@ -18,6 +18,7 @@ type StageApprovalService interface {
 	Create(context.Context, dto.CreateStageApproval, string, string) (model.StageApproval, error)
 	Update(context.Context, uint, dto.UpdateStageApproval, string, string) (model.StageApproval, error)
 	Transition(context.Context, uint, dto.TransitionRequest, string, string, string) (model.StageApproval, error)
+	SubmitCorrection(context.Context, uint, dto.CorrectionRequest, string, string, string) (model.StageApproval, error)
 	Delete(context.Context, uint, string, string) error
 	StatusCounts(context.Context) (map[string]int64, error)
 }
@@ -66,6 +67,9 @@ func (s *stageApprovalService) Update(ctx context.Context, id uint, input dto.Up
 	if err != nil {
 		return model.StageApproval{}, err
 	}
+	// Business fields stay immutable once review starts. The 待补正 state is not
+	// an editable state either: corrections are submitted as explanations and
+	// recorded in the append-only opinion log.
 	if current.Status != string(constants.ApprovalStateDraft) {
 		return model.StageApproval{}, ErrApprovalLocked
 	}
@@ -92,6 +96,30 @@ func (s *stageApprovalService) Update(ctx context.Context, id uint, input dto.Up
 	return s.repository.Get(ctx, id)
 }
 
+// reviewerDecisions are the transitions only a reviewer or administrator may perform.
+var reviewerDecisions = map[string]bool{
+	string(constants.ApprovalStateApproved):   true,
+	string(constants.ApprovalStateRejected):   true,
+	string(constants.ApprovalStateCorrection): true,
+}
+
+func isReviewerRole(role string) bool {
+	return role == model.RoleReviewer || role == model.RoleAdmin
+}
+
+// currentBatch derives the review batch (复核批次) number from the append-only
+// opinion log. Opinions are stored version-ascending; every resubmission after
+// a 退回补正 opens a new batch.
+func currentBatch(opinions []model.ApprovalOpinion) uint {
+	var batch uint = 1
+	for _, opinion := range opinions {
+		if opinion.Kind == model.OpinionKindCorrection {
+			batch = opinion.Batch
+		}
+	}
+	return batch
+}
+
 func (s *stageApprovalService) Transition(ctx context.Context, id uint, input dto.TransitionRequest, actor, role, requestID string) (model.StageApproval, error) {
 	current, err := s.repository.Get(ctx, id)
 	if err != nil {
@@ -101,23 +129,75 @@ func (s *stageApprovalService) Transition(ctx context.Context, id uint, input dt
 	if !constants.CanTransition(constants.StageApprovalTransitions, current.Status, target) {
 		return model.StageApproval{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current.Status, target)
 	}
-	if (target == string(constants.ApprovalStateApproved) || target == string(constants.ApprovalStateRejected)) &&
-		role != model.RoleReviewer && role != model.RoleAdmin {
+	if reviewerDecisions[target] && !isReviewerRole(role) {
 		return model.StageApproval{}, ErrReviewerRequired
 	}
 	before := current.Status
+	now := time.Now().UTC()
+	batch := currentBatch(current.Opinions)
+	kind := model.OpinionKindDecision
+	// A direct draft -> review submission starts the first review batch; later
+	// review entries come from correction resubmissions (handled separately).
+	if target == string(constants.ApprovalStateReview) {
+		kind = model.OpinionKindSubmit
+	}
 	current.Status = target
 	current.Version = input.ExpectedVersion + 1
-	current.UpdatedAt = time.Now().UTC()
+	current.UpdatedAt = now
 	opinion := &model.ApprovalOpinion{
-		Version: input.ExpectedVersion + 1, Status: target, Opinion: strings.TrimSpace(input.Reason),
-		Actor: actor, RequestID: requestID, CreatedAt: current.UpdatedAt,
+		Version: input.ExpectedVersion + 1, Batch: batch, Status: target,
+		Opinion: strings.TrimSpace(input.Reason), Kind: kind,
+		Actor: actor, Role: role, RequestID: requestID, CreatedAt: now,
 	}
 	if err := s.repository.TransitionWithOpinion(ctx, id, input.ExpectedVersion, &current, opinion); err != nil {
 		return model.StageApproval{}, fmt.Errorf("transition 阶段审批: %w", err)
 	}
-	if err := s.security.Audit(ctx, actor, requestID, "transition", "StageApproval", id, before, target, input.Reason); err != nil {
+	action := "transition"
+	if target == string(constants.ApprovalStateCorrection) {
+		action = "request_correction"
+	}
+	if err := s.security.Audit(ctx, actor, requestID, action, "StageApproval", id, before, target, input.Reason); err != nil {
 		return model.StageApproval{}, fmt.Errorf("persist transition audit: %w", err)
+	}
+	return s.repository.Get(ctx, id)
+}
+
+// SubmitCorrection handles an operator explanation for an approval awaiting
+// correction. It appends an immutable correction opinion carrying the actor,
+// role and request ID, moves the approval back to review and opens the next
+// review batch; the reviewer still decides approve or reject there.
+func (s *stageApprovalService) SubmitCorrection(ctx context.Context, id uint, input dto.CorrectionRequest, actor, role, requestID string) (model.StageApproval, error) {
+	current, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return model.StageApproval{}, err
+	}
+	if current.Status != string(constants.ApprovalStateCorrection) {
+		return model.StageApproval{}, ErrCorrectionRequired
+	}
+	if role != model.RoleOperator {
+		return model.StageApproval{}, ErrOperatorRequired
+	}
+	explanation := strings.TrimSpace(input.Correction)
+	if explanation == "" {
+		return model.StageApproval{}, ErrInvalidInput
+	}
+	before := current.Status
+	now := time.Now().UTC()
+	nextBatch := currentBatch(current.Opinions) + 1
+	target := string(constants.ApprovalStateReview)
+	current.Status = target
+	current.Version = input.ExpectedVersion + 1
+	current.UpdatedAt = now
+	opinion := &model.ApprovalOpinion{
+		Version: input.ExpectedVersion + 1, Batch: nextBatch, Status: target,
+		Opinion: explanation, Kind: model.OpinionKindCorrection,
+		Actor: actor, Role: role, RequestID: requestID, CreatedAt: now,
+	}
+	if err := s.repository.TransitionWithOpinion(ctx, id, input.ExpectedVersion, &current, opinion); err != nil {
+		return model.StageApproval{}, fmt.Errorf("submit correction 阶段审批: %w", err)
+	}
+	if err := s.security.Audit(ctx, actor, requestID, "submit_correction", "StageApproval", id, before, target, explanation); err != nil {
+		return model.StageApproval{}, fmt.Errorf("persist correction audit: %w", err)
 	}
 	return s.repository.Get(ctx, id)
 }

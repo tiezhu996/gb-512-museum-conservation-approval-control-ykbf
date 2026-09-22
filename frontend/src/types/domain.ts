@@ -21,8 +21,30 @@ export interface DomainRecord {
 }
 
 export interface ApprovalOpinion {
-  id: number; stageApprovalId: number; version: number; status: string;
-  opinion: string; actor: string; requestId: string; createdAt: string;
+  id: number; stageApprovalId: number; version: number; batch: number; status: string;
+  opinion: string; kind: ApprovalOpinionKind; actor: string; role: string;
+  requestId: string; createdAt: string;
+}
+
+export type ApprovalOpinionKind = 'submit' | 'decision' | 'correction';
+
+// Action descriptor returned by the workbench: each entry is executable by the
+// current role for a record in its current status.
+export interface ApprovalAction {
+  key: ApprovalActionKey;
+  label: string;
+  target?: string;
+  danger?: boolean;
+  warning?: boolean;
+  requiresReason: boolean;
+  minLength: number;
+}
+
+export type ApprovalActionKey = 'submit' | 'approve' | 'reject' | 'requestCorrection' | 'submitCorrection';
+
+export interface CorrectionPayload {
+  expectedVersion: number;
+  correction: string;
 }
 
 export interface PageMeta { page: number; pageSize: number; total: number }

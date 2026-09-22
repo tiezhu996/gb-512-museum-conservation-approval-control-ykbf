@@ -33,3 +33,11 @@ type UpdateStageApproval struct {
 	Evidence        string    `json:"evidence" binding:"max=2000"`
 	RelatedCode     string    `json:"relatedCode" binding:"max=64"`
 }
+
+// CorrectionRequest is the operator-only contract for resubmitting an approval
+// that is waiting in the correction (待补正) state. The explanation is appended
+// as an immutable opinion and opens a new review batch.
+type CorrectionRequest struct {
+	ExpectedVersion uint   `json:"expectedVersion" binding:"required"`
+	Correction      string `json:"correction" binding:"required,min=3,max=1000"`
+}

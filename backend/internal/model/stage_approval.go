@@ -26,14 +26,28 @@ func (item StageApproval) TableName() string { return "stage_approvals" }
 var StageApprovalInitialStatus = "draft"
 
 // ApprovalOpinion is append-only: one immutable opinion is stored for every
-// aggregate version created by an approval state transition.
+// aggregate version created by an approval state transition. Rows are never
+// updated or deleted; Batch groups the review round (复核批次) the opinion
+// belongs to so every request-correction/resubmission cycle stays traceable.
 type ApprovalOpinion struct {
-	ID              uint      `json:"id" gorm:"primaryKey"`
-	StageApprovalID uint      `json:"stageApprovalId" gorm:"uniqueIndex:idx_approval_opinion_version;not null"`
-	Version         uint      `json:"version" gorm:"uniqueIndex:idx_approval_opinion_version;not null"`
-	Status          string    `json:"status" gorm:"size:40;not null"`
-	Opinion         string    `json:"opinion" gorm:"size:500;not null"`
-	Actor           string    `json:"actor" gorm:"size:80;not null;index"`
-	RequestID       string    `json:"requestId" gorm:"size:64;not null;index"`
-	CreatedAt       time.Time `json:"createdAt" gorm:"index"`
+	ID              uint   `json:"id" gorm:"primaryKey"`
+	StageApprovalID uint   `json:"stageApprovalId" gorm:"uniqueIndex:idx_approval_opinion_version;not null"`
+	Version         uint   `json:"version" gorm:"uniqueIndex:idx_approval_opinion_version;not null"`
+	Batch           uint   `json:"batch" gorm:"not null;default:1;index"`
+	Status          string `json:"status" gorm:"size:40;not null"`
+	Opinion         string `json:"opinion" gorm:"size:1000;not null"`
+	// Kind distinguishes reviewer decisions (decision) from operator
+	// correction submissions (correction) within the same append-only log.
+	Kind      string    `json:"kind" gorm:"size:20;not null;default:decision"`
+	Actor     string    `json:"actor" gorm:"size:80;not null;index"`
+	Role      string    `json:"role" gorm:"size:32;not null;default:operator"`
+	RequestID string    `json:"requestId" gorm:"size:64;not null;index"`
+	CreatedAt time.Time `json:"createdAt" gorm:"index"`
 }
+
+// ApprovalOpinion kinds.
+const (
+	OpinionKindSubmit     = "submit"
+	OpinionKindDecision   = "decision"
+	OpinionKindCorrection = "correction"
+)

@@ -19,3 +19,21 @@ func TestStageApprovalCannotSkipReview(t *testing.T) {
 		t.Fatal("draft approval must enter review")
 	}
 }
+
+func TestStageApprovalCorrectionFlow(t *testing.T) {
+	if !CanTransition(StageApprovalTransitions, "review", "correction") {
+		t.Fatal("reviewer must be able to request correction from review")
+	}
+	if !CanTransition(StageApprovalTransitions, "correction", "review") {
+		t.Fatal("operator correction explanation must reopen review")
+	}
+	if CanTransition(StageApprovalTransitions, "correction", "approved") {
+		t.Fatal("correction must not skip the new review batch")
+	}
+	if CanTransition(StageApprovalTransitions, "correction", "correction") {
+		t.Fatal("an approval awaiting correction cannot request correction again")
+	}
+	if CanTransition(StageApprovalTransitions, "approved", "correction") {
+		t.Fatal("an approved approval is final")
+	}
+}
