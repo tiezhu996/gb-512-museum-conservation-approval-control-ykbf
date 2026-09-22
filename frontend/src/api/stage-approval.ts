@@ -13,3 +13,15 @@ export async function transitionStageApproval(id: number, status: string, expect
     method: 'POST', body: JSON.stringify({ status, expectedVersion, reason }),
   });
 }
+// 复核人或管理员退回补正，意见必填。
+export async function returnStageApprovalForCorrection(id: number, expectedVersion: number, opinion: string) {
+  return request<DomainRecord>(`/approvals/${id}/return-correction`, {
+    method: 'POST', body: JSON.stringify({ expectedVersion, opinion }),
+  });
+}
+// 操作员提交补正说明，开启新的复核批次。
+export async function submitStageApprovalCorrection(id: number, expectedVersion: number, opinion: string) {
+  return request<DomainRecord>(`/approvals/${id}/correct`, {
+    method: 'POST', body: JSON.stringify({ expectedVersion, opinion }),
+  });
+}

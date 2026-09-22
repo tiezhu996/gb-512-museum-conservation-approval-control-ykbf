@@ -26,11 +26,14 @@ func (item StageApproval) TableName() string { return "stage_approvals" }
 var StageApprovalInitialStatus = "draft"
 
 // ApprovalOpinion is append-only: one immutable opinion is stored for every
-// aggregate version created by an approval state transition.
+// aggregate version created by an approval state transition. Batch marks the
+// review round (复核批次): each entry into review, including resubmission after
+// 退回补正, opens a new batch. Historical rows are never rewritten.
 type ApprovalOpinion struct {
 	ID              uint      `json:"id" gorm:"primaryKey"`
 	StageApprovalID uint      `json:"stageApprovalId" gorm:"uniqueIndex:idx_approval_opinion_version;not null"`
 	Version         uint      `json:"version" gorm:"uniqueIndex:idx_approval_opinion_version;not null"`
+	Batch           uint      `json:"batch" gorm:"not null;default:1;index"`
 	Status          string    `json:"status" gorm:"size:40;not null"`
 	Opinion         string    `json:"opinion" gorm:"size:500;not null"`
 	Actor           string    `json:"actor" gorm:"size:80;not null;index"`

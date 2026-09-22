@@ -33,3 +33,18 @@ type UpdateStageApproval struct {
 	Evidence        string    `json:"evidence" binding:"max=2000"`
 	RelatedCode     string    `json:"relatedCode" binding:"max=64"`
 }
+
+// ReturnForCorrectionRequest is used by a reviewer or administrator to send an
+// approval currently under review back to the operator for 补正. The opinion is
+// mandatory: it explains what must be corrected and is kept forever.
+type ReturnForCorrectionRequest struct {
+	ExpectedVersion uint   `json:"expectedVersion" binding:"required"`
+	Opinion         string `json:"opinion" binding:"required,min=3,max=500"`
+}
+
+// CorrectionRequest is used by the operator after 待补正. The correction note
+// opens a new review batch but never rewrites earlier opinions or fields.
+type CorrectionRequest struct {
+	ExpectedVersion uint   `json:"expectedVersion" binding:"required"`
+	Opinion         string `json:"opinion" binding:"required,min=3,max=500"`
+}

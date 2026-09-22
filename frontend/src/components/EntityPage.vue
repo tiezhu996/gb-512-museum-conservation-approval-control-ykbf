@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import type { DomainRecord, EntityConfig } from '../types/domain';
+import type { ApprovalAction, DomainRecord, EntityConfig } from '../types/domain';
 import { formatDate, nextStatus } from '../utils/format';
 import { useAuth } from '../hooks/useAuth';
 import StatusBadge from './common/StatusBadge.vue';
@@ -8,30 +8,72 @@ import MetricCard from './common/MetricCard.vue';
 import ConfirmDialog from './common/ConfirmDialog.vue';
 import EmptyState from './common/EmptyState.vue';
 
+interface PendingOperation { item: DomainRecord; action: ApprovalAction }
+
 const props = defineProps<{ config: EntityConfig; store: any }>();
 const { session } = useAuth();
 const search = ref('');
 const showCreate = ref(false);
-const pending = ref<{ item: DomainRecord; status: string } | null>(null);
+const pending = ref<PendingOperation | null>(null);
+const opinion = ref('');
+const opinionError = ref('');
 const roleRank: Record<string, number> = { viewer: 1, operator: 2, reviewer: 3, admin: 4 };
 const canWrite = computed(() => (roleRank[session.value?.role || ''] || 0) >= roleRank.operator);
-const canReview = computed(() => (roleRank[session.value?.role || ''] || 0) >= roleRank.reviewer);
+const isApproval = computed(() => props.config.path === 'approvals');
 const highRisk = computed(() => props.store.items.filter((item: DomainRecord) => ['high', 'critical'].includes(item.riskLevel)).length);
 
 onMounted(() => void props.store.load(props.config.path));
 
-function canTransition(item: DomainRecord): boolean {
-  const target = nextStatus(item.status, props.config.statuses);
-  if (!target || !canWrite.value) return false;
-  if (props.config.path === 'approvals' && item.status === 'approved') return false;
-  if (props.config.path === 'approvals' && ['approved', 'rejected'].includes(target)) return canReview.value;
-  return true;
+// 阶段审批：返回当前角色在该状态下允许执行的操作；其它实体沿用线性推进。
+function availableActions(item: DomainRecord): ApprovalAction[] {
+  if (!isApproval.value) return [];
+  return props.config.actions?.[item.status] ?? [];
 }
 
-async function createDemo() {
+function canRun(action: ApprovalAction): boolean {
+  if (!session.value) return false;
+  return roleRank[session.value.role] >= (roleRank[action.minRole] ?? 0);
+}
+
+// 非阶段审批实体保持原有“推进到下一状态”的单按钮逻辑。
+function legacyTarget(item: DomainRecord): string | null {
+  if (isApproval.value) return null;
+  const target = nextStatus(item.status, props.config.statuses);
+  if (!target || !canWrite.value) return null;
+  return target;
+}
+
+function canTransition(item: DomainRecord): boolean {
+  return legacyTarget(item) !== null;
+}
+
+function openOperation(item: DomainRecord, action: ApprovalAction) {
+  if (!canRun(action)) return;
+  opinion.value = '';
+  opinionError.value = '';
+  pending.value = { item, action };
+}
+
+// 审批操作都必须携带意见；其它实体保留默认说明。
+async function confirmTransition() {
+  if (!pending.value) return;
+  const { item, action } = pending.value;
+  const note = opinion.value.trim();
+  if (isApproval.value) {
+    if (!canRun(action) || note.length < 3) {
+      opinionError.value = '请填写不少于 3 个字符的意见后再提交';
+      return;
+    }
+  }
+  if (!isApproval.value && legacyTarget(item) === null) return;
+  await props.store.transition(props.config.path, item, action.target, isApproval.value ? note : '前端工作台人工确认');
+  pending.value = null;
+}
+
+function createDemo() {
   if (!canWrite.value) return;
   const now = Date.now();
-  await props.store.createRecord(props.config.path, {
+  void props.store.createRecord(props.config.path, {
     code: `${props.config.key.toUpperCase()}-${String(now).slice(-6)}`,
     name: `新增${props.config.label}`,
     description: '通过前端工作台创建的业务记录',
@@ -42,10 +84,18 @@ async function createDemo() {
   showCreate.value = false;
 }
 
-async function confirmTransition() {
-  if (!pending.value || !canTransition(pending.value.item)) return;
-  await props.store.transition(props.config.path, pending.value.item, pending.value.status);
-  pending.value = null;
+// 没有可执行操作时给出当前状态对应的说明。
+function idleHint(item: DomainRecord): string {
+  if (!canWrite.value) return '只读权限';
+  if (!isApproval.value) return '流程结束';
+  if (availableActions(item).some(canRun)) return '';
+  switch (item.status) {
+    case 'review': return '等待复核员审批';
+    case 'pending_correction': return '等待操作员补正';
+    case 'approved': return '审批已通过';
+    case 'rejected': return '审批已驳回';
+    default: return '流程结束';
+  }
 }
 </script>
 
@@ -72,25 +122,53 @@ async function confirmTransition() {
       <el-table v-loading="store.loading" :data="store.items">
         <el-table-column prop="code" label="编码" width="150"/>
         <el-table-column label="名称" min-width="180"><template #default="{ row }"><strong>{{ row.name }}</strong><small>{{ row.facility }}</small></template></el-table-column>
-        <el-table-column label="状态" width="140"><template #default="{ row }"><StatusBadge :status="row.status"/></template></el-table-column>
+        <el-table-column label="状态" width="150"><template #default="{ row }"><StatusBadge :status="row.status"/></template></el-table-column>
         <el-table-column prop="riskLevel" label="风险" width="90"/>
         <el-table-column prop="owner" label="责任人"/>
         <el-table-column label="指标"><template #default="{ row }">{{ row.metricValue }} {{ row.metricUnit }}</template></el-table-column>
-        <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatDate(row.updatedAt) }}</template></el-table-column>
-        <el-table-column label="操作" width="200">
+        <el-table-column label="复核批次" width="100">
           <template #default="{ row }">
-            <el-button v-if="canTransition(row)" link type="primary" @click="pending = { item: row, status: nextStatus(row.status, config.statuses)! }">推进至 {{ nextStatus(row.status, config.statuses) }}</el-button>
-            <span v-else-if="!canWrite" class="muted">只读权限</span>
-            <span v-else-if="config.path === 'approvals' && row.status === 'review'" class="muted">等待复核员审批</span>
-            <span v-else class="muted">流程结束</span>
+            <span v-if="isApproval && row.opinions?.length">第 {{ row.opinions[row.opinions.length - 1].batch }} 批</span>
+            <span v-else-if="isApproval" class="muted">未提交</span>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatDate(row.updatedAt) }}</template></el-table-column>
+        <el-table-column label="操作" :width="isApproval ? 250 : 200">
+          <template #default="{ row }">
+            <template v-if="isApproval">
+              <el-button v-for="action in availableActions(row).filter(canRun)" :key="action.target"
+                link :type="action.tone" @click="openOperation(row, action)">{{ action.label }}</el-button>
+              <span v-if="!availableActions(row).some(canRun)" class="muted">{{ idleHint(row) }}</span>
+            </template>
+            <template v-else>
+              <el-button v-if="canTransition(row)" link type="primary"
+                @click="openOperation(row, { target: legacyTarget(row)!, label: '推进状态', minRole: 'operator', tone: 'primary', placeholder: '' })">
+                推进至 {{ legacyTarget(row) }}
+              </el-button>
+              <span v-else class="muted">流程结束</span>
+            </template>
           </template>
         </el-table-column>
       </el-table>
     </section>
     <ConfirmDialog v-model="showCreate" :title="`新增${config.label}`" @confirm="createDemo"><p>将创建一条包含责任人、风险和保护证据信息的记录。</p></ConfirmDialog>
-    <ConfirmDialog :model-value="Boolean(pending)" title="确认状态迁移" @update:model-value="pending = null" @confirm="confirmTransition">
-      <p>本次意见会作为独立版本写入审批历史，并记录操作者与请求 ID。</p>
-      <strong>{{ pending?.item.status }} → {{ pending?.status }}</strong>
+    <ConfirmDialog :model-value="Boolean(pending)" :title="`确认${pending?.action.label ?? '状态迁移'}`"
+      @update:model-value="pending = null" @confirm="confirmTransition">
+      <p>本次意见会作为独立版本写入审批历史，并记录操作者与请求 ID，历史意见不可改写。</p>
+      <p v-if="isApproval"><strong>{{ pending?.item.status }} → {{ pending?.action.target }}</strong></p>
+      <p v-else><strong>{{ pending?.item.status }} → {{ pending?.action.target }}</strong></p>
+      <el-input
+        v-if="isApproval"
+        v-model="opinion"
+        type="textarea"
+        :rows="3"
+        :placeholder="pending?.action.placeholder"
+        maxlength="500"
+        show-word-limit
+        class="opinion-input"
+      />
+      <small v-if="opinionError" class="opinion-error">{{ opinionError }}</small>
     </ConfirmDialog>
   </main>
 </template>

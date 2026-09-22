@@ -29,12 +29,13 @@ docker compose down -v --remove-orphans
 | 文物 | `Artifact` | `/api/artifacts` | registered, stable, treatment, closed |
 | 处理方案 | `TreatmentPlan` | `/api/plans` | draft, review, approved, completed |
 | 材料检测 | `MaterialTest` | `/api/tests` | planned, running, verified, invalid |
-| 阶段审批 | `StageApproval` | `/api/approvals` | draft, review, approved, rejected |
+| 阶段审批 | `StageApproval` | `/api/approvals` | draft, review, pending_correction, approved, rejected |
 
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC；后端写路由中间件、前端路由守卫和操作按钮权限保持一致。
 - 所有状态变化使用乐观锁并写入不可覆盖的审计日志。
 - 阶段审批必须由 `draft` 进入 `review`，operator 不能批准或驳回；reviewer/admin 的每条意见以独立版本追加，保存操作者和 request ID，审批开始后普通字段不可覆盖。
-- `RiskTag` 在文物与方案页共用，`ApprovalTimeline` 在方案与审批页共用，`EmptyState` 统一处理空结果。
+- 阶段审批支持退回补正：reviewer/admin 可在 `review` 中退回（进入 `pending_correction`）并填写必填意见；只有 `pending_correction` 记录允许由 operator（或 admin 代办）提交补正说明，补正后回到 `review` 并开启新的复核批次，复核人在新批次中仍可通过或驳回。每次意见、责任人、原文、request ID 和批次号都只追加、不可改写；无权限、源状态不符或版本过期的提交直接失败且不改变任何数据。
+- `RiskTag` 在文物与方案页共用，`ApprovalTimeline` 在方案与审批页共用并按复核批次展示完整意见，`EmptyState` 统一处理空结果。
 - 请求 ID、结构化日志、全局错误映射和 Redis 分布式限流。
 - 提供脱敏运行配置、当前会话、审计汇总和单实体审计历史接口。
 - 业务工作台支持查询、新建、状态推进、风险标识及操作审计查看。
@@ -113,7 +114,7 @@ cd .. && docker compose config --quiet
 | 枚举 | 值 | 前后端出现位置 |
 |---|---|---|
 | `ArtifactState` | `registered, stable, treatment, closed` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
-| `ApprovalState` | `draft, review, approved, rejected` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
+| `ApprovalState` | `draft, review, pending_correction, approved, rejected` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 
 每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。
 

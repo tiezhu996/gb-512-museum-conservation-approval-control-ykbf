@@ -17,13 +17,14 @@ var AllArtifactState = []string{"registered", "stable", "treatment", "closed"}
 type ApprovalState string
 
 const (
-	ApprovalStateDraft    ApprovalState = "draft"
-	ApprovalStateReview   ApprovalState = "review"
-	ApprovalStateApproved ApprovalState = "approved"
-	ApprovalStateRejected ApprovalState = "rejected"
+	ApprovalStateDraft             ApprovalState = "draft"
+	ApprovalStateReview            ApprovalState = "review"
+	ApprovalStatePendingCorrection ApprovalState = "pending_correction"
+	ApprovalStateApproved          ApprovalState = "approved"
+	ApprovalStateRejected          ApprovalState = "rejected"
 )
 
-var AllApprovalState = []string{"draft", "review", "approved", "rejected"}
+var AllApprovalState = []string{"draft", "review", "pending_correction", "approved", "rejected"}
 
 var ArtifactTransitions = map[string]map[string]bool{
 	"registered": {"stable": true, "treatment": true},
@@ -47,10 +48,11 @@ var MaterialTestTransitions = map[string]map[string]bool{
 }
 
 var StageApprovalTransitions = map[string]map[string]bool{
-	"draft":    {"review": true},
-	"review":   {"approved": true, "rejected": true, "draft": true},
-	"approved": {},
-	"rejected": {"draft": true, "review": true},
+	"draft":              {"review": true},
+	"review":             {"approved": true, "rejected": true, "pending_correction": true, "draft": true},
+	"pending_correction": {"review": true},
+	"approved":           {},
+	"rejected":           {"draft": true, "review": true},
 }
 
 func CanTransition(graph map[string]map[string]bool, from, to string) bool {

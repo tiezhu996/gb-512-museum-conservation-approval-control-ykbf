@@ -226,5 +226,29 @@ func seedStageApproval(ctx context.Context, db *gorm.DB) error {
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-512-03"},
 	}
-	return db.WithContext(ctx).Create(&items).Error
+	if err := db.WithContext(ctx).Create(&items).Error; err != nil {
+		return err
+	}
+
+	// SA-004 演示退回补正：v2 提交进入批次 1，v3 复核人退回补正（仍为批次 1），
+	// v4 操作员补正后重新进入复核开启批次 2，当前停留在 review 等待复核决定。
+	returned := model.StageApproval{
+		BaseModel: model.BaseModel{Code: "SA-004", Name: "阶段审批示例四（退回补正）", Status: "review", Version: 4,
+			Description: "演示复核人退回补正、操作员提交补正说明并开启新复核批次"},
+		Facility: "文物保护处理区域4", Owner: "现场操作员", Category: "材料补正", RiskLevel: "medium",
+		MetricValue: 22.0, MetricUnit: "%", EffectiveAt: now.Add(9 * time.Hour),
+		Evidence: "初版影像证据缺少比例尺；补正后已补齐", RelatedCode: "MT-002",
+	}
+	if err := db.WithContext(ctx).Create(&returned).Error; err != nil {
+		return err
+	}
+	opinions := []model.ApprovalOpinion{
+		{StageApprovalID: returned.ID, Version: 2, Batch: 1, Status: "review",
+			Opinion: "初版材料已核对，提交阶段复核", Actor: "operator", RequestID: "seed-sa004-submit", CreatedAt: now.Add(10 * time.Hour)},
+		{StageApprovalID: returned.ID, Version: 3, Batch: 1, Status: "pending_correction",
+			Opinion: "影像证据缺少比例尺，检测温度记录不完整，请补正后重新提交", Actor: "reviewer", RequestID: "seed-sa004-return", CreatedAt: now.Add(11 * time.Hour)},
+		{StageApprovalID: returned.ID, Version: 4, Batch: 2, Status: "review",
+			Opinion: "已补充带比例尺的影像与完整温度记录，附检测原始记录扫描件", Actor: "operator", RequestID: "seed-sa004-correct", CreatedAt: now.Add(12 * time.Hour)},
+	}
+	return db.WithContext(ctx).Create(&opinions).Error
 }

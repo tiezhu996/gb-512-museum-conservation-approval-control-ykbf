@@ -65,6 +65,29 @@ operator_approve_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http:
 approved=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals/$approval_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d "$approve_payload")
 printf '%s' "$approved" | jq -e '.data.status == "approved" and (.data.opinions | length) == 2 and .data.opinions[0].version == 2 and .data.opinions[1].version == 3 and .data.opinions[1].actor == "reviewer" and (.data.opinions[1].requestId | length > 0)' >/dev/null
 
+# 退回补正：复核人退回、操作员补正开启新复核批次、复核人在新批次通过。
+correction_code="CORRECTION-SMOKE-$(date +%s)"
+correction_payload=$(printf '{"code":"%s","name":"Return for correction validation","facility":"Conservation Lab","owner":"operator","category":"treatment","riskLevel":"medium","metricValue":7,"metricUnit":"score","effectiveAt":"%s","evidence":"Initial evidence","relatedCode":"TP-SMOKE"}' "$correction_code" "$now")
+correction_id=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$correction_payload" | jq -er '.data.id')
+curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals/$correction_id/transition" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d '{"status":"review","expectedVersion":1,"reason":"提交复核"}' >/dev/null
+
+operator_return_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals/$correction_id/return-correction" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d '{"expectedVersion":2,"opinion":"操作员无权退回"}')
+[ "$operator_return_status" = "403" ]
+
+returned=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals/$correction_id/return-correction" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d '{"expectedVersion":2,"opinion":"影像缺少比例尺，请补正"}')
+printf '%s' "$returned" | jq -e '.data.status == "pending_correction" and .data.version == 3 and .data.opinions[2].batch == 1 and .data.opinions[2].status == "pending_correction" and .data.opinions[2].actor == "reviewer"' >/dev/null
+return_version=$(printf '%s' "$returned" | jq -er '.data.version')
+
+reviewer_correct_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals/$correction_id/correct" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d '{"expectedVersion":3,"opinion":"复核人不能自补"}')
+[ "$reviewer_correct_status" = "403" ]
+stale_correct_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals/$correction_id/correct" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d '{"expectedVersion":2,"opinion":"过期版本补正"}')
+[ "$stale_correct_status" = "409" ]
+
+resubmitted=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals/$correction_id/correct" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "{\"expectedVersion\":$return_version,\"opinion\":\"已补充带比例尺影像与温度记录\"}")
+printf '%s' "$resubmitted" | jq -e '.data.status == "review" and .data.version == 4 and .data.opinions[3].batch == 2 and .data.opinions[3].actor == "operator"' >/dev/null
+reapproved=$(curl -fsS -X POST "http://127.0.0.1:${BACKEND_PORT}/api/approvals/$correction_id/transition" -H "Authorization: Bearer $reviewer_token" -H 'Content-Type: application/json' -d '{"status":"approved","expectedVersion":4,"reason":"补正充分，复核通过"}')
+printf '%s' "$reapproved" | jq -e '.data.status == "approved" and (.data.opinions | length) == 4 and [.data.opinions[].opinion] | length == 4' >/dev/null
+
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audits?page=1&pageSize=100" -H "Authorization: Bearer $token" | jq -e '.meta.total >= 2' >/dev/null
 curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/audit-summary?windowHours=24" -H "Authorization: Bearer $token" | jq -e '.data.total >= 2 and .data.transitions >= 1' >/dev/null
 docker compose ps
